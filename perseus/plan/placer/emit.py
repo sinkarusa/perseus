@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from collections.abc import Callable
 
@@ -9,6 +10,31 @@ from .refresh import RefreshPlanner
 from .sim import SimResult
 
 _VAR_INDEX_RE = re.compile(r"^v_(\d+)$")
+
+# PLAN_SIDE_DEG_FREE=<step substr>,...: no final_named_degs pin on a degree-preserving op's output in a matching step
+# whose cipher inputs are all graph inputs (or such outputs). A carried side state (the LFM2 conv state) has a
+# producer-dependent degree -- deg 1 after a fresh prefix or a fired refresh hint, deg 2 when the producer's hint does
+# not fire -- while the sim seeds it at one degree; the exact deg pin would reject the other. Level pins stay (one-sided).
+_SIDE_DEG_FREE_STEPS = tuple(s for s in os.environ.get("PLAN_SIDE_DEG_FREE", "").split(",") if s)
+_DEG_PRESERVING_OPS = frozenset({
+    "rotate", "rotate_inplace", "rotate_sum", "conjugate", "conjugate_inplace", "negate", "negate_inplace",
+    "level_reduce", "level_reduce_inplace", "mult_i", "mult_i_inplace", "copy",
+    # deg(a +- b) = max(deg a, deg b): free only when every summand is free (checked below)
+    "add", "add_inplace", "sub", "sub_inplace", "sub_ct", "sub_inplace_ct",
+})
+
+
+def side_deg_free_vars(g: Graph) -> set[str]:
+    free: set[str] = set()
+    if not _SIDE_DEG_FREE_STEPS:
+        return free
+    for n in g.nodes:
+        if (n.output and n.op in _DEG_PRESERVING_OPS and n.cipher_inputs
+                and any(s in n.step for s in _SIDE_DEG_FREE_STEPS)
+                and all(v in g.inputs or v in free for v in n.cipher_inputs)):
+            free.add(n.output)
+    return free
+
 
 _LINEAR_STEP_KEYS: dict[str, list[str]] = {
     "qkv":          ["q", "k", "v", "kv"],
@@ -183,8 +209,9 @@ def assemble(
         for n in g.nodes if n.output
     }
 
+    deg_free = side_deg_free_vars(g)
     final_named_degs = {
-        n.output: int(sim.deg.get(n.output, 1)) for n in g.nodes if n.output
+        n.output: int(sim.deg.get(n.output, 1)) for n in g.nodes if n.output and n.output not in deg_free
     }
 
     all_sites = sorted(set(placed), key=_placement_order)
