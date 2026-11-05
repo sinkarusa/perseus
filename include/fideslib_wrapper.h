@@ -1146,7 +1146,9 @@ struct CKKSContext {
             RaiseScope rs(*this, rit != plan_raise_drop.end() ? rit->second : 0);
             RealScope rl(*this, plan_real_route.count(var_name) > 0);
             ShippedScope so(*this, plan_shipped_order.count(var_name) > 0);
-            if (static const bool dbg = [] { const char* e = std::getenv("FIDESLIB_BTS_DEBUG_STC"); return e && std::atoi(e) > 0; }(); dbg)
+            // hoisted out of the if-init: nvcc 12.6/12.8 crash (find_local_static_variable_init) on a static there
+            static const bool dbg = [] { const char* e = std::getenv("FIDESLIB_BTS_DEBUG_STC"); return e && std::atoi(e) > 0; }();
+            if (dbg)
                 std::cerr << "[stc_dbg] planned " << var_name << " shipped=" << plan_shipped_order.count(var_name)
                           << " (" << plan_shipped_order.size() << " listed) real=" << plan_real_route.count(var_name)
                           << " cf=" << (cit != plan_correction_factor.end() ? cit->second : -1)
