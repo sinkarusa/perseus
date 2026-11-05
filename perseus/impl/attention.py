@@ -271,15 +271,19 @@ def _kv_bts_scope():
     return _pyb.stc_first(False)
 
 
-def cache_kv_push_packed_complex(rt, kv: ComplexKVCache, P_in, q=None, rope=None, pos=None):
+def cache_kv_push_packed_complex(rt, kv: ComplexKVCache, P_in, q=None, rope=None, pos=None, qk_norm=None):
     """cache_kv_push_packed_complex: the fused K + iV linear output refreshed by ONE
     bootstrap, split by conjugation (2K on the real axis, -2iV on the imaginary one), K
     masked and bucketed (odd groups packed by the monomial i), V realified (times i, the
     monomial: no level) and scattered into the pair buckets.
     `q` (KV_LANES + QKV_LANES): the Q linear output rides the same real payload on token lane
-    2 and comes back refreshed, on lane 0 (the one refresh serves Q, K and V)."""
+    2 and comes back refreshed, on lane 0 (the one refresh serves Q, K and V).
+    `qk_norm(rt, X) -> Xn` (KV_LANES only; LFM2 / Qwen3-style per-head q / k RMSNorm before RoPE): applied to the
+    refreshed payload X; K (lane 0) and the queries (lanes 2, ...) are taken from Xn, V (lane 1) from X."""
     ops, d = rt.ops, rt.dims
     kvl = getattr(ops, "kv_lanes", False)
+    if qk_norm is not None and not kvl:
+        raise ValueError("qk_norm needs KV_LANES=1 (the norm runs on the refreshed K / V / Q payload)")
     q_out = None
     if kvl:
         # KV_LANES: realify first (both halves fill every token lane), keep K on lane 0 and V on lane 1, and refresh
@@ -299,12 +303,13 @@ def cache_kv_push_packed_complex(rt, kv: ComplexKVCache, P_in, q=None, rope=None
                 X = ops.add(X, ops.rotate(Qc, -2 - i))
         with _kv_bts_scope():
             ops.bootstrap_real(X)
+        Xn = X if qk_norm is None else qk_norm(rt, X)
         if qs is not None:
             # lane 2 (+ i) back to lane 0; complex_qkt's tok0 mask drops the K / V lanes
-            q_out = [ops.rotate(X, 2 + i) for i in range(len(qs))]
+            q_out = [ops.rotate(Xn, 2 + i) for i in range(len(qs))]
             if not isinstance(q, list):
                 q_out = q_out[0]
-        K = rope_mask(rt, X, "kpush.tok0", lambda: real_head_tok0_mask(d), rope, pos)
+        K = rope_mask(rt, Xn, "kpush.tok0", lambda: real_head_tok0_mask(d), rope, pos)
     else:
         P = ops.copy(P_in)
         with _kv_bts_scope():
@@ -725,12 +730,13 @@ def softmax_v(rt, kv: KVCache, probs):
     return rt.mult_mask(res, "tok0.h", lambda: real_head_half_mask(d))
 
 
-def kv_push(rt, kv, payload, q=None, rope=None, pos=None):
+def kv_push(rt, kv, payload, q=None, rope=None, pos=None, qk_norm=None):
     """Push one token into the caches: `payload` is the fused K + iV linear output (a ComplexKVCache) or (k, v).
     `q` (QKV_LANES): the Q linear output riding the same refresh; the refreshed Q is returned (else None).
     A cache with a `payload_log` list (the fake's prefix run) also keeps a copy of the payload's slot vectors, to
     replay the pushes on another session (driver.ImplModel.replay_kv_pushes; a replay pushes without Q, which
-    leaves the K / V lanes and their levels as they are). `rope` / `pos`: RoPE of K at position `pos`."""
+    leaves the K / V lanes and their levels as they are). `rope` / `pos`: RoPE of K at position `pos`.
+    `qk_norm`: per-head q / k norm on the refreshed payload (cache_kv_push_packed_complex, ComplexKVCache only)."""
     ops = rt.ops
     log = getattr(kv, "payload_log", None)
     if log is not None:
@@ -738,7 +744,9 @@ def kv_push(rt, kv, payload, q=None, rope=None, pos=None):
         vec = lambda c: np.array(getattr(c, "vec", c))
         log.append(vec(payload) if isinstance(kv, ComplexKVCache) else tuple(vec(c) for c in payload))
     if isinstance(kv, ComplexKVCache):
-        return cache_kv_push_packed_complex(rt, kv, payload, q, rope=rope, pos=pos)
+        return cache_kv_push_packed_complex(rt, kv, payload, q, rope=rope, pos=pos, qk_norm=qk_norm)
+    if qk_norm is not None:
+        raise ValueError("qk_norm needs the cachemir_complex cache (ComplexKVCache)")
     elif ops.complex_payload:
         cache_kv_push_pair(rt, kv, *payload, rope=rope, pos=pos)   # one bootstrap for K and V
     else:
@@ -815,13 +823,17 @@ def gqa_dims(d: Dims, G: int) -> Dims:
 
 
 def mha_gqa(rt, sub, G: int, x, w, kv, sm_cfg: SoftmaxCfg, rope: Rope | None = None, pos: int | None = None,
-            pre_linear=None, pre_out=None):
-    """mha on an un-expanded (GQA) K / V cache held by the sub-runtime `sub` (gqa_dims)."""
+            pre_linear=None, pre_out=None, qk_norm=None):
+    """mha on an un-expanded (GQA) K / V cache held by the sub-runtime `sub` (gqa_dims).
+    `qk_norm(sub, X) -> Xn`: per-head q / k RMSNorm on the push's refreshed payload (needs QKV_LANES: the queries
+    ride that payload)."""
     if rope is not None and pos is None:
         raise ValueError("mha: RoPE needs the token position")
     rp = dict(rope=rope, pos=pos)
     ops, d = rt.ops, rt.dims
     qkvl = getattr(ops, "kv_lanes", False) and getattr(ops, "qkv_lanes", False)
+    if qk_norm is not None and not qkvl:
+        raise ValueError("mha_gqa: qk_norm needs KV_LANES=1 QKV_LANES=1")
     with rt.step("qkv"):
         ops.bootstrap_hint(x, ops.headroom(0 if qkvl else 1), True)
         if pre_linear is not None:
@@ -830,7 +842,7 @@ def mha_gqa(rt, sub, G: int, x, w, kv, sm_cfg: SoftmaxCfg, rope: Rope | None = N
     qs = [q] + [ops.rotate(q, g * d.t) for g in range(1, G)]
     with rt.step("kv_push"):
         if qkvl:
-            qs = kv_push(sub, kv, P, qs, **rp)
+            qs = kv_push(sub, kv, P, qs, qk_norm=qk_norm, **rp)
         else:
             kv_push(sub, kv, P, **rp)
     a = sm_fold_affine(sub, sm_cfg)[0]
