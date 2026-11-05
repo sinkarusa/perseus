@@ -203,7 +203,9 @@ def simulate(
         elif n.op == "level_reduce":
             c = (n.output_level - bootstrap_level if n.output_level is not None
                  else (lc.get(ins[0], 0.0) if ins else 0.0))
-            d = n.output_deg if n.output_deg is not None else (dg.get(ins[0], 1) if ins else 1)
+            # a drop keeps the input's degree (DropToLevel never rescales); the captured output_deg is stale when the
+            # plan refreshes the input where the capture did not (an eager hint that fires only under the plan)
+            d = dg.get(ins[0], 1) if ins else (n.output_deg if n.output_deg is not None else 1)
             if ins and lc.get(ins[0], 0.0) >= c:     # no-op drop
                 c, d = lc.get(ins[0], 0.0), dg.get(ins[0], 1)
         elif n.op == "fold_bootstrap":
