@@ -25,6 +25,14 @@ def _capture_stamp(block_dir: Path):
 from . import emit
 
 
+def _exact_drop(g: Graph, v) -> bool:
+    """v is a level_reduce output: a drop to an exact target level (a conv state pin, a cache read level). Realizing
+    its pending rescale lands it one unit below the target, which its cross-pass consumers (the next pass's state
+    inputs, pinned at the target) do not accept; so it is never a realize candidate."""
+    p = g.producer_of.get(v)
+    return p is not None and p.op.startswith("level_reduce")
+
+
 def _raise_candidates(g: Graph, sim: SimResult, forbid_steps, hint_outs, placed) -> set:
     unit = g.level_unit
     out = set()
@@ -43,7 +51,7 @@ def _raise_candidates(g: Graph, sim: SimResult, forbid_steps, hint_outs, placed)
         if d2eff <= d1max:
             continue
         for v in d2:
-            if v in placed or v in hint_outs or v in g.inputs:
+            if v in placed or v in hint_outs or v in g.inputs or _exact_drop(g, v):
                 continue
             p = g.producer_of.get(v)
             if p is None:
@@ -67,7 +75,7 @@ def _ks_candidates(g: Graph, sim: SimResult, hint_outs, placed) -> set:
         if n.op not in KS_OPS or n.is_deliberate_bts or n.hint_level is not None:
             continue
         for v in n.cipher_inputs:
-            if sim.deg.get(v, 1) != 2 or v in placed or v in hint_outs or v in g.inputs:
+            if sim.deg.get(v, 1) != 2 or v in placed or v in hint_outs or v in g.inputs or _exact_drop(g, v):
                 continue
             if g.producer_of.get(v) is None:
                 continue
@@ -88,7 +96,7 @@ def _shared_candidates(g: Graph, sim: SimResult, hint_outs, placed) -> set:
             consumers.setdefault(v, []).append(n)
     out = set()
     for v, cs in consumers.items():
-        if sim.deg.get(v, 1) != 2 or v in placed or v in hint_outs or v in g.inputs:
+        if sim.deg.get(v, 1) != 2 or v in placed or v in hint_outs or v in g.inputs or _exact_drop(g, v):
             continue
         if g.producer_of.get(v) is None or len(cs) < 2:
             continue
