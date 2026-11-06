@@ -454,6 +454,13 @@ void bind_bts(py::module_& root) {
           py::arg("fhe"), py::arg("drop"),
           "Raise the following bootstraps `drop` composite levels below the top (a variant FIDESLIB_BTS_RAISE_DROPS "
           "built at session start; 0 = the top). The planned runtime sets it per site from the plan.");
+    m.def("stc_cache_free",
+          [](CKKSContext& fhe, bool first_ref, bool high) {
+              return FC::btsStcCacheFree(std::any_cast<FC::Context&>(fhe.cc->gpu), first_ref, high);
+          },
+          py::arg("fhe"), py::arg("first_ref") = true, py::arg("high") = true, kRelease,
+          "Drop StC plaintext cache entries (first_ref: stc_first last stages at the reference CF 20; high: every "
+          "stc_high entry); rebuilt on the next miss. Returns the number dropped.");
     m.def("spru_setup",
           [](CKKSContext& fhe, int h) {
               auto& lcc = std::any_cast<lbcrypto::CryptoContext<lbcrypto::DCRTPoly>&>(fhe.cc->cpu);

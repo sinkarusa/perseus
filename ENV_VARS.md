@@ -153,6 +153,8 @@ Regenerate this file with `python scripts/utils/scan_env_vars.py`.
 | `FIDESLIB_PT_SCRATCH` | 0 keeps the NTT scratch of finished plaintexts (device-encoded weights and masks, bootstrap tables, SparseB copies); by default it is released, halving their footprint (a plaintext is only read once built). |
 | `FIDESLIB_PT_COMPACT` | 0 stores the bootstrap stage tables in full (default: one value per NTT block). |
 | `FIDESLIB_AUX_POLY_MAX` | Cap on FIDESlib's polynomial recycler (destroyed ciphertexts' polynomials kept with their limbs for reuse; default unbounded). Without recycling a token is ~4x slower; a full device frees the recycler before failing either way. |
+| `FIDESLIB_LEVEL_SIZED` | Level-sized ciphertexts (default 0 = off): 1 gives a ciphertext's limbs above its level (both 256 KiB buffers) back to the pool at every rescale / fused ModDown+rescale; 2 also at `dropToLevel` and when a recycled polynomial is grown to a lower level, and hoisted-rotation outputs stop growing to the top level. Single GPU; ignored under `FIDESLIB_BTS_GRAPH` / `FIDESLIB_FINISH_GRAPH`; logs `[L6]`. |
+| `FIDESLIB_LEVEL_SIZED_FENCE` | Diagnostic for `FIDESLIB_LEVEL_SIZED`: 1 synchronizes the device before every release (a divergence that goes away with it is a missing stream edge) and prints `[L6] CUDA error ...` when a device fault is pending there. |
 | `FIDESLIB_BTS_RAISE_DROP` | Per-route raise below the top modulus, `slots:k,...` in composite levels (e.g. `512:1`): that route's bootstraps run on fewer limbs and land k levels lower; a plan that uses it declares it in its `runtime=` line (the main n32 plan: `512:1`). Unset or 0: raise to the top. |
 | `FIDESLIB_BTS_RAISE_EAGER` | 1 builds every raise variant (`FIDESLIB_BTS_RAISE_DROPS`) at context load; by default each is built when a planted bootstrap first asks for it (each is a full copy of a route's tables). |
 | `FIDESLIB_POOL_TRACE` | Record a backtrace per live pooled block: `_core.gpu_pool_trace()` lists the live bytes by allocation site (diagnostic, slow). |
@@ -169,6 +171,10 @@ Regenerate this file with `python scripts/utils/scan_env_vars.py`.
 | `FIDESLIB_AUX_NOSYNC` | 0 restores the aux-buffer release's read-back of the limb pointer tables behind a stream sync (by default the live buffers are normalized on the device). |
 | `FIDESLIB_SCRATCH_RETIRE` | 0 restores exact-size ciphertext scratch slots that grow behind a stream sync and a device-wide cudaFree inside bootstraps (by default a slot starts at a floor, grows geometrically and keeps outgrown buffers until the ciphertext dies). |
 | `FIDESLIB_SPRU_NOSYNC` | 0 restores the SPRU bootstrap's three per-call cudaDeviceSynchronize fences (156 device drains per decode token). |
+| `FIDESLIB_ROT_LIMB_LOG` | Path: record per rotation key (normalized index) the most limbs (level + 1) it was key-switched at; written as JSON `{"index": limbs}` at exit or by `_core.rot_limb_log_write`; logs `[N2]`. |
+| `FIDESLIB_ROT_KEY_BANDS` | Path to a `FIDESLIB_ROT_LIMB_LOG` file: each listed model rotation key is banded to its own limbs - 1 (unlisted keys keep `FIDESLIB_ROT_KEY_BAND`, bootstrap indexes stay full); logs `[N2]` per-band counts. A rotation above a key's band is fatal. |
+| `FIDESLIB_ROT_KEYS_HOST` | 1: model rotation keys no bootstrap route uses keep their packed `b` half in pinned host memory and are fetched to the device on use, LRU-evicted past `FIDESLIB_ROT_KEYS_DEV_GB` (single GPU, `FIDESLIB_KSK_PACK=1` and `FIDESLIB_KSK_REGEN>=2` keys only; bootstrap keys stay resident); logs `[L8]`, `[L8] fetches N bytes B` at exit. |
+| `FIDESLIB_ROT_KEYS_DEV_GB` | Device budget (GB, 1e9 B) of the `FIDESLIB_ROT_KEYS_HOST` key cache (default 2); the keys one hoisted rotation gathers stay resident even past it. |
 
 ## Profiling
 

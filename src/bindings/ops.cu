@@ -2,6 +2,7 @@
 // packing-dispatched ops, GPT-2 composites, graph/plan controls.
 #include "attention.h"
 #include "CKKS/Plaintext.cuh"   // device_registry: the plaintext registry entries' limbs
+#include "CKKS/KeySwitchingKey.cuh"   // WriteRotLimbLog (FIDESLIB_ROT_LIMB_LOG)
 #include "CudaUtils.cuh"   // FIDESlib::pinnedHostAlloc
 #include "checks.h"
 #include "ckks_primitives.h"
@@ -1292,6 +1293,23 @@ void bind_ops(py::module_& m) {
           "and returned to the device at process exit. The CKKS context itself (keys, "
           "bootstrap precomputation) stays alive — ciphertexts still reference it — so a "
           "closed session cannot compute, but a new one can be created.");
+    m.def("free_host_keys",
+          [](Inference& inf) {
+              if (!inf.fhe) throw std::runtime_error("free_host_keys: no CKKS context");
+              py::gil_scoped_release nogil;
+              return inf.fhe->free_host_keys();
+          },
+          py::arg("inf"),
+          "PF_FREE_HOST_KEYS (lever H1): drop OpenFHE's host copies of every eval key (relinearization + rotation / "
+          "bootstrap automorphism maps) once all device keys are built. Returns the number of host keys dropped. Any "
+          "later path that re-reads them (load_rotation_steps, a new sparse route, AddRotationKeys) throws. The heap "
+          "keeps the pages until malloc_trim.");
+    m.def("rot_limb_log_write",
+          [](const std::string& path) { return FIDESlib::CKKS::WriteRotLimbLog(path); },
+          py::arg("path") = std::string(),
+          "FIDESLIB_ROT_LIMB_LOG (lever N2a): write {normalized rotation index: max limbs it was key-switched at} as "
+          "JSON to `path` (empty: the env path; it is also written at exit). Returns the key count, -1 when the env "
+          "is unset.");
     m.def("device_sync", []() { py::gil_scoped_release nogil; cudaDeviceSynchronize(); },
           "cudaDeviceSynchronize: wait for every stream (a diagnostic fence).");
     m.def("device_free_gb", []() {

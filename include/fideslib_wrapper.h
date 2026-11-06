@@ -641,6 +641,14 @@ struct CKKSContext {
                 loaded_rot_steps.push_back(s);
     }
 
+    // PF_FREE_HOST_KEYS (lever H1): drop OpenFHE's host copies of the eval keys once every device key is built
+    // (FIDESlib CryptoContextImpl::FreeHostKeys); a later load_rotation_steps / add_sparse_route then throws.
+    size_t free_host_keys() {
+        if (pending_heavy_setup)
+            throw std::runtime_error("free_host_keys: the heavy setup (LoadContext) has not run yet");
+        return cc->FreeHostKeys();
+    }
+
     int   total_depth = 25;
     int   btp_overhead = 15;
     // COMPOSITESCALING: primes per CKKS level (1 on classic chains). Wrapper levels are

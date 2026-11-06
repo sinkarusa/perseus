@@ -58,6 +58,7 @@ PackedCtx deserialize_ct(Inference& inf, const py::bytes& data) {
 void save_keys(Inference& inf, const std::string& dir) {
     using CCI = fideslib::CryptoContextImpl<fideslib::DCRTPoly>;
     namespace fs = std::filesystem;
+    FIDESlib::CKKS::RequireHostKeys("save_keys");  // PF_FREE_HOST_KEYS: the eval-key maps would serialize empty
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec || !fs::is_directory(dir))
